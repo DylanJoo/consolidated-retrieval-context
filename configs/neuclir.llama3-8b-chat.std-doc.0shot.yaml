@@ -1,0 +1,12 @@
+---
+train_file: data/data-train.json
+eval_file: requests-dev-all.jsonl
+used_field: translation
+ndoc: 10
+shot: 0
+closebook: False
+tag: std-doc
+model: meta-llama/Meta-Llama-3.1-8B-Instruct
+attn_implementation: flash_attention_2
+temperature: 1.0
+top_p: 0.95

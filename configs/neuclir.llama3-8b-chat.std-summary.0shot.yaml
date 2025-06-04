@@ -1,0 +1,12 @@
+---
+train_file: data/data-train.json
+eval_file: requests-dev-all.jsonl
+used_field: recomp-nq-summary
+ndoc: 30
+shot: 0
+closebook: False
+tag: std-summary
+model: meta-llama/Meta-Llama-3.1-8B-Instruct
+attn_implementation: flash_attention_2
+temperature: 1.0
+top_p: 0.95
