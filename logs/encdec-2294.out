@@ -33,3 +33,4 @@ You are using the default legacy behaviour of the <class 'transformers.models.t5
 Filter: 100%|██████████| 5000/5000 [00:00<00:00, 33084.37 examples/s]
 max_steps is given, it will override any value given in num_train_epochs
 max_steps is given, it will override any value given in num_train_epochs
+slurmstepd: error: *** JOB 2294 ON rack4n01 CANCELLED AT 2025-06-04T16:59:37 ***

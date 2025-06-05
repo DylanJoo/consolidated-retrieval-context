@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --job-name=encdec
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:l40s:2
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --mem=32G
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -22,7 +22,6 @@ accelerate launch \
     --tokenizer_name google/flan-t5-small \
     --config_name google/flan-t5-small  \
     --output_dir ${MODEL_DIR}/ctxcomp-flan-t5-small \
-
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 4 \
