@@ -40,8 +40,8 @@ from transformers.processing_utils import Unpack
 
 from transformers.utils import LossKwargs, auto_docstring, can_return_tuple, logging
 from transformers.models.llama.modeling_llama import (
-    LlamaPreTrainedModel,
     LlamaAttention,
+    LlamaPreTrainedModel,
     LlamaMLP,
     LlamaRMSNorm,
     LlamaRotaryEmbedding,
@@ -70,7 +70,6 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     inverted_mask = 1.0 - expanded_mask
     return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
-
 # [note] modify the kv hidden
 class LlamaCrossAttention(LlamaAttention):
     """ The encoded rotary embeddings are done once in encoding. skip during the cross-attention """
@@ -85,8 +84,6 @@ class LlamaCrossAttention(LlamaAttention):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-
-        # reshape states 
         q_input_shape = hidden_states.shape[:-1]
         k_input_shape = encoder_hidden_states.shape[:-1]
         hidden_shape = (*q_input_shape, -1, self.head_dim)
@@ -97,10 +94,6 @@ class LlamaCrossAttention(LlamaAttention):
         value_states = self.v_proj(encoder_hidden_states).view(encoder_hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
-
-        # reshape mask
-        # attention_mask = attention_mask.view()
-
         # query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         # [note] skip the key value caching (i) done when encoding (ii) document-level position
@@ -115,6 +108,13 @@ class LlamaCrossAttention(LlamaAttention):
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         # [note] attention_mask might be incorrect
+        # print(query_states.shape)
+        # print(key_states.shape)
+        # print(attention_mask.shape)
+        # if key_states.size(0) != attention_mask.size(0):
+        #     bsz = key_states.size(0)
+        #     _, _, seq_len, head_dim = attention_mask.shape
+        #     attention_mask = attention_mask.view(bsz, head_dim)
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
@@ -126,7 +126,7 @@ class LlamaCrossAttention(LlamaAttention):
             **kwargs,
         )
 
-        attn_output = attn_output.reshape(*q_input_shape, -1).contiguous()
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
@@ -183,23 +183,10 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
         # Cross Attention
         enc_dec_attention_mask = encoder_attention_mask # this might be customized
         do_cross_attention = (do_cross_attention or self.do_cross_attention)
+        print(enc_dec_attention_mask.shape)
         if do_cross_attention and encoder_hidden_states is not None:
-            print('hidden', hidden_states.shape)
-            print('enc hidden', encoder_hidden_states.shape)
             residual = hidden_states
-            bsz = hidden_states.size(0)
-            _, _, tgt_len, src_len = enc_dec_attention_mask.shape # 6 1 2 45
-            """
-            hidden_states: (batch_size, (src)seq_length, hidden) 
-            encoder_hidden_states: (batch_size, ctx_size * (tgt)seq_length, hidden) 
-            cross attention mask: (N, 1, tgt_len, src_len) 
-                - tgt: sequence length of causal decoded tokens 
-                - src: sequence length of encoded embedding 
-
-            # enc_dec_attention_mask = torch.randint(0, 2, (bsz, 1, 2, 78), dtype=torch.bool).to(hidden_states.device)# (N, *, tgt_len, src_len)
-            """
-            enc_dec_attention_mask = enc_dec_attention_mask.view(bsz, -1, tgt_len, src_len)
-            hidden_states, cross_attn_weights = self.cross_attn(
+            hidden_states, cross_attn_weights, encoder_key_values = self.cross_attn(
                     hidden_states=hidden_states,
                     attention_mask=enc_dec_attention_mask,
                     encoder_hidden_states=encoder_hidden_states,
@@ -283,8 +270,14 @@ class LlamaModel(LlamaPreTrainedModel):
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
-        B, L = input_ids.size()
-        N = 1
+        # [note] reshape the input_ids
+        if input_ids.dim() == 3:
+            B, N, L = input_ids.size()
+            input_ids = input_ids.view(B*N, -1)
+            attention_mask = attention_mask.view(B*N, -1)
+        else:
+            B, L = input_ids.size()
+            N = 1
 
         if self.gradient_checkpointing and self.training and use_cache:
             logger.warning_once(
@@ -313,14 +306,12 @@ class LlamaModel(LlamaPreTrainedModel):
 
         # [NOTE] adjusst mask with encoder's hidden states 
         if encoder_hidden_states is not None:
-            # if 0 in encoder_attention_mask:
-            #     encoder_attention_mask_padding = encoder_attention_mask
-            # else:
-            #     encoder_attention_mask_padding = None
+            if 0 in encoder_attention_mask:
+                encoder_attention_mask_padding = encoder_attention_mask
+            else:
+                encoder_attention_mask_padding = None
 
-            encoder_attention_mask = encoder_attention_mask.view(B, -1)
             encoder_attention_mask = _expand_mask(encoder_attention_mask, inputs_embeds.dtype, tgt_len=L).to(inputs_embeds.device)
-            print('2 encoder_attention_mask', encoder_attention_mask.shape)
 
         causal_mask = create_causal_mask(
             config=self.config,
@@ -340,9 +331,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
         for idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
 
-            # do_cross_attention = (idx >= self.config.num_hidden_layers - self.num_cross_attn_layers) and self.do_cross_attention
-            if encoder_hidden_states is not None:
-                print( (idx >= self.config.num_hidden_layers - self.num_cross_attn_layers) and self.do_cross_attention, encoder_hidden_states.shape)
+            do_cross_attention = (idx >= self.config.num_hidden_layers - self.num_cross_attn_layers) and self.do_cross_attention
 
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -367,7 +356,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     hidden_states, attention_mask, 
                     encoder_hidden_state, encoder_attention_mask, 
                     encoder_padding_mask, position_ids,
-                    do_cross_attention=(idx >= self.config.num_hidden_layers - self.num_cross_attn_layers) and self.do_cross_attention
+                    do_cross_attention=do_cross_attention
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -377,7 +366,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     encoder_attention_mask=encoder_attention_mask,
                     encoder_padding_mask=encoder_padding_mask,
                     position_ids=position_ids,
-                    do_cross_attention=(idx >= self.config.num_hidden_layers - self.num_cross_attn_layers) and self.do_cross_attention,
+                    do_cross_attention=do_cross_attention,
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
@@ -467,8 +456,6 @@ class LlamaForCausalLM(LlamaForCausalLM_hf):
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        self.hidden_size = config.hidden_size
-
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -509,9 +496,8 @@ class LlamaForCausalLM(LlamaForCausalLM_hf):
                 do_cross_attention=False
             ).last_hidden_state
 
-            # encoder_hidden_states (bsz, csz*seq_length, hidden)
-            encoder_hidden_states = encoder_hidden_states.view(bsz, -1, self.config.hidden_size)
-            print('encoded_embeddings', encoder_hidden_states.shape)
+            # mean pooling
+            encoder_hidden_states = encoder_hidden_states.mean(dim=1).view(bsz, csz, -1)
 
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
