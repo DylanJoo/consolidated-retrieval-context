@@ -184,8 +184,6 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
         enc_dec_attention_mask = encoder_attention_mask # this might be customized
         do_cross_attention = (do_cross_attention or self.do_cross_attention)
         if do_cross_attention and encoder_hidden_states is not None:
-            print('hidden', hidden_states.shape)
-            print('enc hidden', encoder_hidden_states.shape)
             residual = hidden_states
             bsz = hidden_states.size(0)
             _, _, tgt_len, src_len = enc_dec_attention_mask.shape # 6 1 2 45
@@ -243,8 +241,8 @@ class LlamaModel(LlamaPreTrainedModel):
         for layer_idx in range(config.num_hidden_layers):
             config.do_cross_attention = (layer_idx >= config.num_hidden_layers - self.num_cross_attn_layers) and self.do_cross_attention
             layer_list.append(LlamaDecoderLayer(config, layer_idx))
-
         self.layers = nn.ModuleList(layer_list)
+
         config.do_cross_attention = self.do_cross_attention
 
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -317,10 +315,8 @@ class LlamaModel(LlamaPreTrainedModel):
             #     encoder_attention_mask_padding = encoder_attention_mask
             # else:
             #     encoder_attention_mask_padding = None
-
             encoder_attention_mask = encoder_attention_mask.view(B, -1)
             encoder_attention_mask = _expand_mask(encoder_attention_mask, inputs_embeds.dtype, tgt_len=L).to(inputs_embeds.device)
-            print('2 encoder_attention_mask', encoder_attention_mask.shape)
 
         causal_mask = create_causal_mask(
             config=self.config,
@@ -340,9 +336,8 @@ class LlamaModel(LlamaPreTrainedModel):
 
         for idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
 
-            # do_cross_attention = (idx >= self.config.num_hidden_layers - self.num_cross_attn_layers) and self.do_cross_attention
-            if encoder_hidden_states is not None:
-                print( (idx >= self.config.num_hidden_layers - self.num_cross_attn_layers) and self.do_cross_attention, encoder_hidden_states.shape)
+            # if encoder_hidden_states is not None:
+            #     print( (idx >= self.config.num_hidden_layers - self.num_cross_attn_layers) and self.do_cross_attention, encoder_hidden_states.shape)
 
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -404,43 +399,6 @@ class LlamaModel(LlamaPreTrainedModel):
             attentions=all_self_attns,
         )
 
-
-class LlamaEncoder(LlamaModel):
-    pass
-
-    # def get_pooling(self, features, last_hidden_states):  # All models padded from left
-    #     assert (
-    #         self.tokenizer.padding_side == "left"
-    #     ), "Pooling modes are implemented for padding from left."
-    #     if self.skip_instruction:
-    #         self._skip_instruction(features)
-    #     seq_lengths = features["attention_mask"].sum(dim=-1)
-    #     if self.pooling_mode == "mean":
-    #         return torch.stack(
-    #             [
-    #                 last_hidden_states[i, -length:, :].mean(dim=0)
-    #                 for i, length in enumerate(seq_lengths)
-    #             ],
-    #             dim=0,
-    #         )
-    #     elif self.pooling_mode == "weighted_mean":
-    #         bs, l, _ = last_hidden_states.shape
-    #         complete_weights = torch.zeros(bs, l, device=last_hidden_states.device)
-    #         for i, seq_l in enumerate(seq_lengths):
-    #             if seq_l > 0:
-    #                 complete_weights[i, -seq_l:] = torch.arange(seq_l) + 1
-    #                 complete_weights[i] /= torch.clamp(
-    #                     complete_weights[i].sum(), min=1e-9
-    #                 )
-    #         return torch.sum(last_hidden_states * complete_weights.unsqueeze(-1), dim=1)
-    #     elif self.pooling_mode == "eos_token" or self.pooling_mode == "last_token":
-    #         return last_hidden_states[:, -1]
-    #     elif self.pooling_mode == "bos_token":
-    #         return last_hidden_states[
-    #             features["input_ids"] == self.tokenizer.bos_token_id
-    #         ]
-    #     else:
-    #         raise ValueError(f"{self.pooling_mode} is not implemented yet.")
 
 @auto_docstring
 class LlamaForCausalLM(LlamaForCausalLM_hf):
@@ -509,9 +467,7 @@ class LlamaForCausalLM(LlamaForCausalLM_hf):
                 do_cross_attention=False
             ).last_hidden_state
 
-            # encoder_hidden_states (bsz, csz*seq_length, hidden)
-            encoder_hidden_states = encoder_hidden_states.view(bsz, -1, self.config.hidden_size)
-            print('encoded_embeddings', encoder_hidden_states.shape)
+            encoder_hidden_states = encoder_hidden_states.view(bsz, -1, self.config.hidden_size) # (bsz, csz*seq_length, hidden)
 
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
